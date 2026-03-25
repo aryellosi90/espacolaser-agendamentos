@@ -9,4 +9,4 @@ RUN playwright install chromium
 COPY bot_agendamentos.py .
 COPY scheduler_agendamentos.py .
 
-CMD ["python", "scheduler_agendamentos.py"]
+CMD ["python", "bot_agendamentos.py"]
