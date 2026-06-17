@@ -36,7 +36,7 @@ NOMES_LOJAS = {
 }
 
 LOGIN  = os.environ.get("EVUP_LOGIN", "36217165805")
-SENHA  = os.environ.get("EVUP_SENHA", "Alosi9090@@@***")
+SENHA  = os.environ.get("EVUP_SENHA", "Alosi9090@@@****")
 
 # Webhook para agendamentos (crie no N8N ou use o mesmo com payload diferente)
 WEBHOOK_URL = os.environ.get(
@@ -85,6 +85,62 @@ def clicar(page, seletores, nome, timeout=10000):
     print(f"  !! Não conseguiu clicar em '{nome}'")
     return False
 
+
+# ================================================================
+# HELPERS DE IFRAME (novo layout Elos)
+# ================================================================
+
+def get_page(page_or_frame):
+    """Retorna o objeto Page a partir de um Frame ou Page."""
+    return getattr(page_or_frame, "page", page_or_frame)
+
+
+def encontrar_frame_relatorio(page):
+    """
+    Aguarda e retorna o Frame do menu de relatórios (ReportMain/Index).
+    Esse é o Frame 2, que contém a lista de relatórios disponíveis.
+    """
+    page.wait_for_timeout(3000)
+    frames = page.frames
+    for f in frames:
+        if "ReportMain" in f.url or "reportmain" in f.url.lower():
+            print(f"  [FRAME] Frame ReportMain encontrado: {f.url}")
+            return f
+    # Fallback: qualquer frame do evup (exceto o principal)
+    for f in frames:
+        if "evup.com.br" in f.url and f.url != frames[0].url and "about:blank" not in f.url:
+            print(f"  [FRAME] Frame fallback encontrado: {f.url}")
+            return f
+    print("  [FRAME] Nenhum frame encontrado, usando page principal.")
+    return page
+
+
+def aguardar_frame_agendamentos(page):
+    """
+    Aguarda até 18s (6×3s) pelo Frame 4 que contém o botão BUSCA
+    (SchedulerEvent/Index — página de agendamentos).
+    """
+    url_frame0 = page.frames[0].url
+    frame_agen = None
+    for tentativa in range(6):
+        frames = page.frames
+        for f in frames:
+            if f.url == url_frame0 or "about:blank" in f.url or "ReportMain/Index" in f.url:
+                continue
+            if "evup.com.br" in f.url:
+                try:
+                    count = f.locator("button").filter(has_text="BUSCA").count()
+                    if count > 0:
+                        frame_agen = f
+                        print(f"  [FRAME-AGEN] Frame agendamentos encontrado: {f.url}")
+                        break
+                except Exception:
+                    pass
+        if frame_agen:
+            break
+        print(f"  [FRAME-AGEN] Tentativa {tentativa+1}/6 — aguardando frame...")
+        page.wait_for_timeout(3000)
+    return frame_agen or page
 
 
 # ================================================================
@@ -238,9 +294,9 @@ def configurar_nivel_detalhamento(page):
 
         page.wait_for_timeout(400)
 
-    page.keyboard.press("Escape")
+    get_page(page).keyboard.press("Escape")
     page.wait_for_timeout(400)
-    page.screenshot(path="debug_detalhe_ok.png")
+    get_page(page).screenshot(path="debug_detalhe_ok.png")
     print("  Nível de Detalhamento configurado. Screenshot: debug_detalhe_ok.png")
 
 
@@ -268,37 +324,59 @@ def login_evup(page):
 # ================================================================
 
 def navegar_para_agendamentos(page):
-    print("\n[NAV] Clicando em Relatórios...")
+    """
+    Navega até o relatório de Agendamentos no novo layout Elos (iframe-based).
+    Retorna o frame que contém os filtros e o botão BUSCA.
+    """
+    print("\n[NAV] Clicando em Relatórios (main page)...")
     page.screenshot(path="debug_01_pos_login.png")
 
-    ok = clicar(page, [
-        page.get_by_text("Relatórios", exact=True),
-        page.locator("a:has-text('Relatórios')").first,
-        page.locator("span:has-text('Relatórios')").first,
-        page.locator("li:has-text('Relatórios') > a").first,
-        page.locator("text=Relatórios").first,
-    ], "Relatórios")
+    # Clica em Relatórios na página principal (força click + JS fallback)
+    try:
+        page.locator("a:has-text('Relatórios')").first.click(force=True, timeout=10000)
+    except Exception:
+        try:
+            page.evaluate("""
+                () => {
+                    const els = Array.from(document.querySelectorAll('a, span, li'));
+                    const el = els.find(e => e.textContent.trim() === 'Relatórios');
+                    if (el) el.click();
+                }
+            """)
+        except Exception as e2:
+            print(f"  [NAV] Falha ao clicar Relatórios: {e2}")
 
-    if not ok:
-        raise Exception("Não encontrou o menu 'Relatórios'")
+    page.wait_for_timeout(2000)
 
-    page.wait_for_timeout(3000)
+    # Encontra o Frame 2 (ReportMain — lista de relatórios)
+    frame_relatorio = encontrar_frame_relatorio(page)
     page.screenshot(path="debug_02_relatorios.png")
+    print(f"[NAV] Frame relatório: {getattr(frame_relatorio, 'url', 'page')}")
 
-    print("[NAV] Clicando em Agendamentos...")
-    ok = clicar(page, [
-        page.get_by_text("Agendamentos", exact=True),
-        page.locator("a:has-text('Agendamentos')").first,
-        page.locator("li:has-text('Agendamentos') > a").first,
-        page.locator("text=Agendamentos").first,
-    ], "Agendamentos")
+    # Clica em "Agendamentos" dentro do Frame 2
+    print("[NAV] Clicando em Agendamentos no frame de relatórios...")
+    try:
+        frame_relatorio.locator("a:has-text('Agendamentos')").first.click(force=True, timeout=8000)
+    except Exception:
+        try:
+            frame_relatorio.evaluate("""
+                () => {
+                    const els = Array.from(document.querySelectorAll('a, span, li'));
+                    const el = els.find(e => e.textContent.trim() === 'Agendamentos');
+                    if (el) el.click();
+                }
+            """)
+        except Exception as e2:
+            print(f"  [NAV] Falha ao clicar Agendamentos: {e2}")
 
-    if not ok:
-        raise Exception("Não encontrou o submenu 'Agendamentos'")
+    page.wait_for_timeout(2000)
 
-    page.wait_for_timeout(4000)
+    # Aguarda o Frame 4 (SchedulerEvent — com botão BUSCA)
+    frame_agen = aguardar_frame_agendamentos(page)
     page.screenshot(path="debug_03_agendamentos.png")
+    print(f"[NAV] Frame agendamentos: {getattr(frame_agen, 'url', 'page')}")
     print("[NAV] Na página de Agendamentos. Screenshot: debug_03_agendamentos.png")
+    return frame_agen
 
 
 # ================================================================
@@ -316,7 +394,7 @@ def configurar_datas(page, inicio_str: str, fim_str: str, data_inicio, data_fim)
     page.wait_for_timeout(600)
 
     # Screenshot antes para diagnóstico
-    page.screenshot(path="debug_04_antes_data.png")
+    get_page(page).screenshot(path="debug_04_antes_data.png")
 
     # Inspeciona os inputs visíveis para saber qual seletor usar
     info = page.evaluate("""
@@ -363,12 +441,12 @@ def configurar_datas(page, inicio_str: str, fim_str: str, data_inicio, data_fim)
     # Triple-click (click_count=3) → seleciona tudo → digita o range → Enter
     campo.click(click_count=3)
     page.wait_for_timeout(400)
-    page.keyboard.type(texto_range, delay=40)
+    get_page(page).keyboard.type(texto_range, delay=40)
     page.wait_for_timeout(300)
-    page.keyboard.press("Enter")
+    get_page(page).keyboard.press("Enter")
     page.wait_for_timeout(800)
 
-    page.screenshot(path="debug_04_datas.png")
+    get_page(page).screenshot(path="debug_04_datas.png")
     print(f"  Data configurada. Screenshot: debug_04_datas.png")
 
 
@@ -399,7 +477,7 @@ def configurar_data_criacao(page, hoje_str: str):
                 page.wait_for_timeout(200)
                 loc.type(texto_range, delay=40)
                 page.wait_for_timeout(300)
-                page.keyboard.press("Tab")
+                get_page(page).keyboard.press("Tab")
                 page.wait_for_timeout(400)
                 val = loc.input_value()
                 print(f"  [DATA-CRIACAO] Preenchido via {sel!r}: '{val}'")
@@ -529,7 +607,7 @@ def buscar_e_aguardar(page):
     except Exception:
         pass
     page.wait_for_timeout(5000)
-    page.screenshot(path="debug_05_resultado.png")
+    get_page(page).screenshot(path="debug_05_resultado.png")
     print("[BUSCA] Resultado carregado. Screenshot: debug_05_resultado.png")
 
 
@@ -545,14 +623,15 @@ def baixar_excel(page) -> str:
     print("\n[EXCEL] Expandindo filtro para acessar botão Excel...")
     expandir_filtro(page)
 
-    page.screenshot(path="debug_06_antes_excel.png")
+    get_page(page).screenshot(path="debug_06_antes_excel.png")
 
     # Registra tempo antes do clique para encontrar o arquivo depois
     ts_antes = time.time()
 
     try:
-        # Tenta interceptar o download diretamente
-        with page.expect_download(timeout=120000) as download_info:
+        # Tenta interceptar o download diretamente (download acontece na page principal)
+        pg = get_page(page)
+        with pg.expect_download(timeout=120000) as download_info:
 
             EXCEL_LOCATORS = [
                 page.get_by_role("button", name="EXCEL"),
@@ -577,25 +656,30 @@ def baixar_excel(page) -> str:
                 clicar(page, EXCEL_LOCATORS, "EXCEL")
 
                 # Aguarda até 60s pelo botão CONFIRMAR
+                # O modal CONFIRMAR aparece na page principal (fora do iframe)
                 confirmado = False
                 for t in range(60):
                     page.wait_for_timeout(1000)
-                    try:
-                        btn = page.locator("button:has-text('CONFIRMAR')").first
-                        if btn.is_visible(timeout=500):
-                            btn.click()
-                            print(f"  CONFIRMAR clicado (tentativa excel={tentativa_excel+1}, t={t+1}).")
-                            confirmado = True
-                            break
-                    except Exception:
-                        pass
+                    # Tenta na page principal primeiro (modal aparece fora do iframe)
+                    for contexto in [pg, page]:
+                        try:
+                            btn = contexto.locator("button:has-text('CONFIRMAR')").first
+                            if btn.is_visible(timeout=300):
+                                btn.click()
+                                print(f"  CONFIRMAR clicado (tentativa excel={tentativa_excel+1}, t={t+1}).")
+                                confirmado = True
+                                break
+                        except Exception:
+                            pass
+                    if confirmado:
+                        break
 
                 if confirmado:
                     break
                 else:
                     print(f"  CONFIRMAR não apareceu (excel tentativa {tentativa_excel+1}/3). Botões visíveis:")
                     try:
-                        textos = [b.text_content() or "" for b in page.locator("button").all()[:15]]
+                        textos = [b.text_content() or "" for b in pg.locator("button").all()[:15]]
                         print(f"  {textos}")
                     except Exception:
                         pass
@@ -1224,13 +1308,13 @@ def main():
             page.on("dialog", lambda dialog: dialog.accept())
             try:
                 login_evup(page)
-                navegar_para_agendamentos(page)
-                expandir_filtro(page)
-                configurar_datas(page, inicio_str, fim_str, hoje, data_fim_excel)
-                configurar_nivel_detalhamento(page)
-                limpar_coluna_anterior(page)
-                expandir_filtro(page)
-                caminho = baixar_excel(page)
+                frame_agen = navegar_para_agendamentos(page)
+                expandir_filtro(frame_agen)
+                configurar_datas(frame_agen, inicio_str, fim_str, hoje, data_fim_excel)
+                configurar_nivel_detalhamento(frame_agen)
+                limpar_coluna_anterior(frame_agen)
+                expandir_filtro(frame_agen)
+                caminho = baixar_excel(frame_agen)
                 browser.close()
                 print(f"[DOWNLOAD] {label} → {caminho}")
                 return caminho
@@ -1239,7 +1323,10 @@ def main():
                 try:
                     page.screenshot(path=f"debug_erro_{label}.png")
                 except Exception:
-                    pass
+                    try:
+                        context.pages[0].screenshot(path=f"debug_erro_{label}.png")
+                    except Exception:
+                        pass
                 browser.close()
                 return None
 
