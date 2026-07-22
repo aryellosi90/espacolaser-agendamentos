@@ -1314,6 +1314,7 @@ def main():
                 configurar_nivel_detalhamento(frame_agen)
                 limpar_coluna_anterior(frame_agen)
                 expandir_filtro(frame_agen)
+                buscar_e_aguardar(frame_agen)
                 caminho = baixar_excel(frame_agen)
                 browser.close()
                 print(f"[DOWNLOAD] {label} → {caminho}")
