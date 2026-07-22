@@ -653,7 +653,26 @@ def baixar_excel(page) -> str:
                     expandir_filtro(page)
                     page.wait_for_timeout(2000)
 
-                clicar(page, EXCEL_LOCATORS, "EXCEL")
+                ok_excel = clicar(page, EXCEL_LOCATORS, "EXCEL")
+                if not ok_excel:
+                    # Fallback: força clique via JS (botão pode estar oculto após BUSCA)
+                    try:
+                        clicado = page.evaluate("""
+                            () => {
+                                const all = Array.from(document.querySelectorAll('button, a, span'));
+                                const el = all.find(e =>
+                                    e.textContent.trim().toUpperCase() === 'EXCEL'
+                                );
+                                if (el) { el.click(); return true; }
+                                return false;
+                            }
+                        """)
+                        if clicado:
+                            print("  [EXCEL-JS] Clicado via JavaScript (force).")
+                        else:
+                            print("  [EXCEL-JS] Botão EXCEL não encontrado no DOM.")
+                    except Exception as e_js:
+                        print(f"  [EXCEL-JS] Erro: {e_js}")
 
                 # Aguarda até 60s pelo botão CONFIRMAR
                 # O modal CONFIRMAR aparece na page principal (fora do iframe)
