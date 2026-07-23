@@ -620,7 +620,22 @@ def baixar_excel(page) -> str:
     Expande o painel Filtro (onde fica o botão EXCEL) e faz o download.
     Após o BUSCA o painel colapsa — é preciso expandir novamente.
     """
-    print("\n[EXCEL] Expandindo filtro para acessar botão Excel...")
+    print("\n[EXCEL] Reinicializando filtro (colapsa + re-expande)...")
+    # Força colapso do filtro independente do estado atual — reinicializa o handler
+    # Kendo do EXCEL que fica "sujo" quando o filtro permanece expandido após BUSCA.
+    get_page(page).evaluate("""
+        () => {
+            const all = Array.from(document.querySelectorAll('*'));
+            const el = all.find(e =>
+                e.offsetParent !== null &&
+                e.innerText?.trim() === 'Filtro' &&
+                e.children.length <= 5
+            );
+            if (el) { el.click(); return true; }
+            return false;
+        }
+    """)
+    get_page(page).wait_for_timeout(1200)
     expandir_filtro(page)
 
     get_page(page).screenshot(path="debug_06_antes_excel.png")
