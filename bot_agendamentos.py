@@ -620,22 +620,30 @@ def baixar_excel(page) -> str:
     Expande o painel Filtro (onde fica o botão EXCEL) e faz o download.
     Após o BUSCA o painel colapsa — é preciso expandir novamente.
     """
-    print("\n[EXCEL] Reinicializando filtro (colapsa + re-expande)...")
-    # Força colapso dentro do frame (page = frame_agen) para reinicializar o handler
-    # Kendo do EXCEL que fica "sujo" quando o filtro permanece expandido após BUSCA.
-    page.evaluate("""
-        () => {
-            const all = Array.from(document.querySelectorAll('*'));
-            const el = all.find(e =>
-                e.offsetParent !== null &&
-                e.innerText?.trim() === 'Filtro' &&
-                e.children.length <= 5
-            );
-            if (el) { el.click(); return true; }
-            return false;
-        }
-    """)
-    get_page(page).wait_for_timeout(1200)
+    print("\n[EXCEL] Preparando filtro para EXCEL...")
+    # Se o filtro ficou expandido após BUSCA (ex: criados_hoje), colapsa primeiro
+    # para reinicializar o handler Kendo do EXCEL. Se já colapsou, expande direto.
+    try:
+        filtro_expandido = page.locator("button:has-text('BUSCA')").first.is_visible(timeout=1000)
+    except Exception:
+        filtro_expandido = False
+
+    if filtro_expandido:
+        print("  [FILTRO] Expandido após BUSCA — colapsando para reinicializar handler...")
+        page.evaluate("""
+            () => {
+                const all = Array.from(document.querySelectorAll('*'));
+                const el = all.find(e =>
+                    e.offsetParent !== null &&
+                    e.innerText?.trim() === 'Filtro' &&
+                    e.children.length <= 5
+                );
+                if (el) { el.click(); return true; }
+                return false;
+            }
+        """)
+        get_page(page).wait_for_timeout(1200)
+
     expandir_filtro(page)
 
     get_page(page).screenshot(path="debug_06_antes_excel.png")
