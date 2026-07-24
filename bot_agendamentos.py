@@ -36,7 +36,7 @@ NOMES_LOJAS = {
 }
 
 LOGIN  = os.environ.get("EVUP_LOGIN", "36217165805")
-SENHA  = os.environ.get("EVUP_SENHA", "Alosi9090@@@****")
+SENHA  = os.environ.get("EVUP_SENHA", "")
 
 # Webhook para agendamentos (crie no N8N ou use o mesmo com payload diferente)
 WEBHOOK_URL = os.environ.get(
