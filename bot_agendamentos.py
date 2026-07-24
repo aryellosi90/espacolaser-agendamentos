@@ -621,9 +621,9 @@ def baixar_excel(page) -> str:
     Após o BUSCA o painel colapsa — é preciso expandir novamente.
     """
     print("\n[EXCEL] Reinicializando filtro (colapsa + re-expande)...")
-    # Força colapso do filtro independente do estado atual — reinicializa o handler
+    # Força colapso dentro do frame (page = frame_agen) para reinicializar o handler
     # Kendo do EXCEL que fica "sujo" quando o filtro permanece expandido após BUSCA.
-    get_page(page).evaluate("""
+    page.evaluate("""
         () => {
             const all = Array.from(document.querySelectorAll('*'));
             const el = all.find(e =>
