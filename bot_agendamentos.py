@@ -621,32 +621,21 @@ def baixar_excel(page) -> str:
     Após o BUSCA o painel colapsa — é preciso expandir novamente.
     """
     print("\n[EXCEL] Preparando filtro para EXCEL...")
-    # Se o filtro ficou expandido após BUSCA (ex: criados_hoje), colapsa primeiro
-    # para reinicializar o handler Kendo do EXCEL. Se já colapsou, expande direto.
     try:
         filtro_expandido = page.locator("button:has-text('BUSCA')").first.is_visible(timeout=1000)
     except Exception:
         filtro_expandido = False
 
-    if filtro_expandido:
-        print("  [FILTRO] Expandido após BUSCA — colapsando para reinicializar handler...")
-        page.evaluate("""
-            () => {
-                const all = Array.from(document.querySelectorAll('*'));
-                const el = all.find(e =>
-                    e.offsetParent !== null &&
-                    e.innerText?.trim() === 'Filtro' &&
-                    e.children.length <= 5
-                );
-                if (el) { el.click(); return true; }
-                return false;
-            }
-        """)
-        get_page(page).wait_for_timeout(1200)
-
-    expandir_filtro(page)
-    # Aguarda bindings Knockout inicializarem após re-expansão do filtro
-    get_page(page).wait_for_timeout(3000)
+    # proximos_dias (Railway): filtro colapsa automaticamente após BUSCA → expandir agora.
+    # criados_hoje (Railway): filtro fica expandido após BUSCA → NÃO colapsar na 1ª tentativa.
+    # Colapsar manualmente reseta o ViewModel Knockout, que perde os dados do BUSCA
+    # e torna exportExcel inoperante. Na 1ª tentativa, chamamos EXCEL com o ViewModel
+    # ainda "quente". Só colapsamos se a 1ª tentativa falhar (retries).
+    if not filtro_expandido:
+        expandir_filtro(page)
+        get_page(page).wait_for_timeout(1000)
+    else:
+        print("  [FILTRO] Já expandido — 1ª tentativa com ViewModel do BUSCA (sem colapsar).")
 
     get_page(page).screenshot(path="debug_06_antes_excel.png")
 
@@ -673,21 +662,28 @@ def baixar_excel(page) -> str:
             # Tenta clicar EXCEL + aguardar CONFIRMAR até 3 vezes
             for tentativa_excel in range(3):
                 if tentativa_excel > 0:
-                    print(f"  [EXCEL] Retry {tentativa_excel} — clicando EXCEL novamente...")
-                    page.wait_for_timeout(3000)
+                    print(f"  [EXCEL] Retry {tentativa_excel} — reconfigurando filtro...")
+                    page.wait_for_timeout(2000)
+                    # Nos retries: colapsar (se estava expandido) e re-expandir
+                    if filtro_expandido:
+                        print("  [FILTRO] Colapsando para reinicializar handler...")
+                        page.evaluate("""
+                            () => {
+                                const all = Array.from(document.querySelectorAll('*'));
+                                const el = all.find(e =>
+                                    e.offsetParent !== null &&
+                                    e.innerText?.trim() === 'Filtro' &&
+                                    e.children.length <= 5
+                                );
+                                if (el) { el.click(); return true; }
+                                return false;
+                            }
+                        """)
+                        get_page(page).wait_for_timeout(1200)
                     expandir_filtro(page)
-                    page.wait_for_timeout(3000)
+                    page.wait_for_timeout(1500)
 
                 ok_excel = clicar(page, EXCEL_LOCATORS, "EXCEL")
-                # Força click via Playwright (force=True) no botão pelo seletor CSS —
-                # envia mousedown/mouseup/click reais que o Knockout.js precisa para disparar
-                try:
-                    excel_loc = page.locator("button.excel[data-bind]").first
-                    excel_loc.click(force=True, timeout=3000)
-                    print("  [EXCEL-FORCE] Clicado via Playwright force=True.")
-                except Exception as e_force:
-                    print(f"  [EXCEL-FORCE] Falha: {e_force}")
-                # JS click como fallback adicional
                 try:
                     clicado = page.evaluate("""
                         () => {
@@ -700,7 +696,7 @@ def baixar_excel(page) -> str:
                         }
                     """)
                     if clicado:
-                        print("  [EXCEL-JS] Clicado via JavaScript (force).")
+                        print("  [EXCEL-JS] Clicado via JavaScript.")
                     else:
                         print("  [EXCEL-JS] Botão EXCEL não encontrado no DOM.")
                 except Exception as e_js:
