@@ -645,6 +645,8 @@ def baixar_excel(page) -> str:
         get_page(page).wait_for_timeout(1200)
 
     expandir_filtro(page)
+    # Aguarda bindings Knockout inicializarem após re-expansão do filtro
+    get_page(page).wait_for_timeout(3000)
 
     get_page(page).screenshot(path="debug_06_antes_excel.png")
 
@@ -674,11 +676,18 @@ def baixar_excel(page) -> str:
                     print(f"  [EXCEL] Retry {tentativa_excel} — clicando EXCEL novamente...")
                     page.wait_for_timeout(3000)
                     expandir_filtro(page)
-                    page.wait_for_timeout(2000)
+                    page.wait_for_timeout(3000)
 
                 ok_excel = clicar(page, EXCEL_LOCATORS, "EXCEL")
-                # Sempre dispara JS click também — o click do Playwright em botão visível
-                # pode não acionar o handler do Kendo (ex: após limpar_coluna_anterior)
+                # Força click via Playwright (force=True) no botão pelo seletor CSS —
+                # envia mousedown/mouseup/click reais que o Knockout.js precisa para disparar
+                try:
+                    excel_loc = page.locator("button.excel[data-bind]").first
+                    excel_loc.click(force=True, timeout=3000)
+                    print("  [EXCEL-FORCE] Clicado via Playwright force=True.")
+                except Exception as e_force:
+                    print(f"  [EXCEL-FORCE] Falha: {e_force}")
+                # JS click como fallback adicional
                 try:
                     clicado = page.evaluate("""
                         () => {
