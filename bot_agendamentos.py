@@ -626,16 +626,27 @@ def baixar_excel(page) -> str:
     except Exception:
         filtro_expandido = False
 
-    # proximos_dias (Railway): filtro colapsa automaticamente após BUSCA → expandir agora.
-    # criados_hoje (Railway): filtro fica expandido após BUSCA → NÃO colapsar na 1ª tentativa.
-    # Colapsar manualmente reseta o ViewModel Knockout, que perde os dados do BUSCA
-    # e torna exportExcel inoperante. Na 1ª tentativa, chamamos EXCEL com o ViewModel
-    # ainda "quente". Só colapsamos se a 1ª tentativa falhar (retries).
-    if not filtro_expandido:
-        expandir_filtro(page)
-        get_page(page).wait_for_timeout(1000)
-    else:
-        print("  [FILTRO] Já expandido — 1ª tentativa com ViewModel do BUSCA (sem colapsar).")
+    # Sempre colapsar (se expandido) e re-expandir: a animação de expansão do Kendo
+    # reinicializa o widget Grid e garante que saveAsExcel() funcione.
+    _COLAPSAR_JS = """
+        () => {
+            const all = Array.from(document.querySelectorAll('*'));
+            const el = all.find(e =>
+                e.offsetParent !== null &&
+                e.innerText?.trim() === 'Filtro' &&
+                e.children.length <= 5
+            );
+            if (el) { el.click(); return true; }
+            return false;
+        }
+    """
+    if filtro_expandido:
+        print("  [FILTRO] Expandido — colapsando para forçar reinicialização do Kendo Grid...")
+        page.evaluate(_COLAPSAR_JS)
+        get_page(page).wait_for_timeout(1200)
+
+    expandir_filtro(page)
+    get_page(page).wait_for_timeout(1000)
 
     get_page(page).screenshot(path="debug_06_antes_excel.png")
 
@@ -662,50 +673,78 @@ def baixar_excel(page) -> str:
             # Tenta clicar EXCEL + aguardar CONFIRMAR até 3 vezes
             for tentativa_excel in range(3):
                 if tentativa_excel > 0:
-                    print(f"  [EXCEL] Retry {tentativa_excel} — reconfigurando filtro...")
+                    print(f"  [EXCEL] Retry {tentativa_excel} — recolapsando e re-expandindo filtro...")
                     page.wait_for_timeout(2000)
-                    # Nos retries: colapsar (se estava expandido) e re-expandir
-                    if filtro_expandido:
-                        print("  [FILTRO] Colapsando para reinicializar handler...")
-                        page.evaluate("""
-                            () => {
-                                const all = Array.from(document.querySelectorAll('*'));
-                                const el = all.find(e =>
-                                    e.offsetParent !== null &&
-                                    e.innerText?.trim() === 'Filtro' &&
-                                    e.children.length <= 5
-                                );
-                                if (el) { el.click(); return true; }
-                                return false;
-                            }
-                        """)
+                    # Sempre colapsar e re-expandir nos retries para reinicializar o Kendo Grid
+                    try:
+                        busca_visivel = page.locator("button:has-text('BUSCA')").first.is_visible(timeout=500)
+                    except Exception:
+                        busca_visivel = False
+                    if busca_visivel:
+                        page.evaluate(_COLAPSAR_JS)
                         get_page(page).wait_for_timeout(1200)
                     expandir_filtro(page)
                     page.wait_for_timeout(1500)
 
-                ok_excel = clicar(page, EXCEL_LOCATORS, "EXCEL")
+                ok_excel = clicar(page, EXCEL_LOCATORS, "EXCEL", timeout=1000)
+                # Cascade de acionamento do export — do mais direto ao mais genérico:
+                # 1. Kendo Grid saveAsExcel() — API pública, bypassa Knockout/eventos
+                # 2. Knockout contextFor().exportExcel() — chama ViewModel direto
+                # 3. MouseEvent dispatch — evento mais realista que el.click()
+                # 4. el.click() — fallback final (sintético, menos confiável)
                 try:
-                    clicado = page.evaluate("""
+                    resultado = page.evaluate("""
                         () => {
-                            const all = Array.from(document.querySelectorAll('button, a, span'));
-                            const el = all.find(e =>
-                                e.textContent.trim().toUpperCase() === 'EXCEL'
-                            );
-                            if (el) { el.click(); return true; }
-                            return false;
+                            const btn = document.querySelector('button.excel[data-bind]');
+                            if (!btn) return 'btn-not-found';
+                            const gridId = btn.getAttribute('data-grid-to-export');
+
+                            // Opção 1: Kendo Grid saveAsExcel direto
+                            if (gridId && typeof $ !== 'undefined') {
+                                try {
+                                    const grid = $('#' + gridId).data('kendoGrid');
+                                    if (grid && typeof grid.saveAsExcel === 'function') {
+                                        grid.saveAsExcel();
+                                        return 'kendo-saveAsExcel';
+                                    }
+                                } catch(e) {}
+                            }
+
+                            // Opção 2: Knockout ViewModel direto
+                            if (typeof ko !== 'undefined') {
+                                try {
+                                    const ctx = ko.contextFor(btn);
+                                    if (ctx && ctx.$data && typeof ctx.$data.exportExcel === 'function') {
+                                        ctx.$data.exportExcel(ctx.$data, null);
+                                        return 'ko-contextFor';
+                                    }
+                                } catch(e) {}
+                                try {
+                                    const vm = ko.dataFor(btn);
+                                    if (vm && typeof vm.exportExcel === 'function') {
+                                        vm.exportExcel(vm, null);
+                                        return 'ko-dataFor';
+                                    }
+                                } catch(e) {}
+                            }
+
+                            // Opção 3: MouseEvent realista (bubbles, cancelable)
+                            btn.dispatchEvent(new MouseEvent('click', {
+                                bubbles: true, cancelable: true,
+                                view: window, detail: 1, buttons: 1
+                            }));
+                            return 'mouseEvent';
                         }
                     """)
-                    if clicado:
-                        print("  [EXCEL-JS] Clicado via JavaScript.")
-                    else:
-                        print("  [EXCEL-JS] Botão EXCEL não encontrado no DOM.")
+                    print(f"  [EXCEL-JS] {resultado}")
                 except Exception as e_js:
                     print(f"  [EXCEL-JS] Erro: {e_js}")
 
-                # Aguarda até 60s pelo botão CONFIRMAR
-                # O modal CONFIRMAR aparece na page principal (fora do iframe)
+                # Aguarda até 10s pelo botão CONFIRMAR.
+                # saveAsExcel() faz download silencioso (sem CONFIRMAR) em ~3s;
+                # o fluxo Knockout legado mostra CONFIRMAR em até ~5s.
                 confirmado = False
-                for t in range(60):
+                for t in range(10):
                     page.wait_for_timeout(1000)
                     # Tenta na page principal primeiro (modal aparece fora do iframe)
                     for contexto in [pg, page]:
