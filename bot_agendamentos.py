@@ -1377,98 +1377,86 @@ def main():
     print(f"  Headless: {HEADLESS}")
     print(f"{'='*55}\n")
 
-    def fazer_download(label):
-        """Abre uma sessão nova no EVUP e baixa o Excel. Retorna o caminho do arquivo."""
-        print(f"\n[DOWNLOAD] Iniciando sessão: {label}")
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=HEADLESS,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-            )
-            context = browser.new_context(
-                viewport={"width": 1366, "height": 900},
-                accept_downloads=True,
-                timezone_id="America/Sao_Paulo",
-            )
-            page = context.new_page()
-            page.on("dialog", lambda dialog: dialog.accept())
+    # ── Sessão única: um login, um download, dois relatórios ─────
+    # Ambos os relatórios (proximos_dias e criados_hoje) usam o
+    # mesmo Excel (filtro DATA PROGRAMADA = hoje → hoje+14).
+    # A diferenciação é feita em Python após o download.
+    # Usar duas sessões separadas causava falha do 2º browser no Railway.
+    caminho_excel = None
+    print("\n[DOWNLOAD] Iniciando sessão única...")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=HEADLESS,
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
+        context = browser.new_context(
+            viewport={"width": 1366, "height": 900},
+            accept_downloads=True,
+            timezone_id="America/Sao_Paulo",
+        )
+        page = context.new_page()
+        page.on("dialog", lambda dialog: dialog.accept())
+        try:
+            login_evup(page)
+            frame_agen = navegar_para_agendamentos(page)
+            expandir_filtro(frame_agen)
+            configurar_datas(frame_agen, inicio_str, fim_str, hoje, data_fim_excel)
+            configurar_nivel_detalhamento(frame_agen)
+            limpar_coluna_anterior(frame_agen)
+            expandir_filtro(frame_agen)
+            buscar_e_aguardar(frame_agen)
+            caminho_excel = baixar_excel(frame_agen)
+            print(f"[DOWNLOAD] Excel: {caminho_excel}")
+        except Exception as e:
+            print(f"\nERRO CRÍTICO: {e}")
             try:
-                login_evup(page)
-                frame_agen = navegar_para_agendamentos(page)
-                expandir_filtro(frame_agen)
-                configurar_datas(frame_agen, inicio_str, fim_str, hoje, data_fim_excel)
-                configurar_nivel_detalhamento(frame_agen)
-                limpar_coluna_anterior(frame_agen)
-                expandir_filtro(frame_agen)
-                buscar_e_aguardar(frame_agen)
-                caminho = baixar_excel(frame_agen)
-                browser.close()
-                print(f"[DOWNLOAD] {label} → {caminho}")
-                return caminho
-            except Exception as e:
-                print(f"\nERRO CRÍTICO [{label}]: {e}")
+                page.screenshot(path="debug_erro_download.png")
+            except Exception:
                 try:
-                    page.screenshot(path=f"debug_erro_{label}.png")
+                    context.pages[0].screenshot(path="debug_erro_download.png")
                 except Exception:
-                    try:
-                        context.pages[0].screenshot(path=f"debug_erro_{label}.png")
-                    except Exception:
-                        pass
-                browser.close()
-                return None
+                    pass
+        finally:
+            browser.close()
 
-    # ── Download 1: Próximos Dias ────────────────────────────────
-    caminho1 = fazer_download("proximos_dias")
-    if not caminho1:
-        print(f"\n[{datetime.now(TZ_SP).strftime('%H:%M:%S')}] Encerrado com erro.\n")
+    if not caminho_excel:
+        print(f"\n[{datetime.now(TZ_SP).strftime('%H:%M:%S')}] Encerrado com erro no download.\n")
         return
 
     try:
-        df1   = ler_excel(caminho1)
-        mapa1 = mapear_colunas(df1)
+        df   = ler_excel(caminho_excel)
+        mapa = mapear_colunas(df)
     except Exception as e:
-        print(f"\nERRO ao ler Excel (proximos_dias): {e}")
+        print(f"\nERRO ao ler Excel: {e}")
         return
 
+    # ── Próximos Dias ────────────────────────────────────────────
     print("\n--- GERANDO: Próximos Dias ---")
     try:
-        caminho_img, img_b64 = gerar_imagem_proximos_dias(df1, mapa1, hoje, data_ref, hora_ref)
+        caminho_img, img_b64 = gerar_imagem_proximos_dias(df, mapa, hoje, data_ref, hora_ref)
     except Exception as e:
         print(f"  ERRO ao gerar imagem: {e}")
         caminho_img, img_b64 = None, None
 
-    msg2 = gerar_msg_proximos_dias(df1, mapa1, data_ref, hora_ref, hoje)
+    msg_proximos = gerar_msg_proximos_dias(df, mapa, data_ref, hora_ref, hoje)
     if caminho_img:
         print(f"  Imagem: {caminho_img}")
-        enviar_webhook(msg2 or "", "proximos_dias", data_ref, hora_ref, img_b64)
-    elif msg2:
-        print(msg2)
-        enviar_webhook(msg2, "proximos_dias", data_ref, hora_ref)
+        enviar_webhook(msg_proximos or "", "proximos_dias", data_ref, hora_ref, img_b64)
+    elif msg_proximos:
+        print(msg_proximos)
+        enviar_webhook(msg_proximos, "proximos_dias", data_ref, hora_ref)
     else:
         print("  Sem dados para 'Próximos Dias'.")
 
-    # ── Download 2: Criados Hoje ─────────────────────────────────
-    caminho2 = fazer_download("criados_hoje")
-    if not caminho2:
-        print(f"\n[{datetime.now(TZ_SP).strftime('%H:%M:%S')}] Encerrado com erro.\n")
-        return
-
-    try:
-        df2   = ler_excel(caminho2)
-        mapa2 = mapear_colunas(df2)
-    except Exception as e:
-        print(f"\nERRO ao ler Excel (criados_hoje): {e}")
-        return
-
-    # Debug
-    col_cri = mapa2.get("data_criacao")
+    # ── Criados Hoje ─────────────────────────────────────────────
+    col_cri = mapa.get("data_criacao")
     if col_cri:
-        datas_c = pd.to_datetime(df2[col_cri], dayfirst=True, errors="coerce")
+        datas_c = pd.to_datetime(df[col_cri], dayfirst=True, errors="coerce")
         n_hoje  = (datas_c.dt.date == hoje).sum()
-        print(f"[DEBUG] Total linhas: {len(df2)} | DATA CRIAÇÃO=hoje: {n_hoje} | máx: {datas_c.max()}")
+        print(f"[DEBUG] Total linhas: {len(df)} | DATA CRIAÇÃO=hoje: {n_hoje} | máx: {datas_c.max()}")
 
     print("\n--- GERANDO: Criados Hoje ---")
-    caminho_cri, img_b64_criados = gerar_imagem_criados_hoje(df2, mapa2, hoje, data_ref, hora_ref)
+    caminho_cri, img_b64_criados = gerar_imagem_criados_hoje(df, mapa, hoje, data_ref, hora_ref)
     if img_b64_criados:
         print(f"  Imagem: {caminho_cri}")
         enviar_webhook("Agendamentos Criados Hoje", "criados_hoje", data_ref, hora_ref, img_b64_criados)
