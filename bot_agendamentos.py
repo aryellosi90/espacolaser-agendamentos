@@ -147,6 +147,15 @@ def aguardar_frame_agendamentos(page):
 # EXPANDIR PAINEL DE FILTRO (barra azul "Filtro")
 # ================================================================
 
+_FILTRO_LOCATORS = lambda page: [
+    page.locator(".card-header:has-text('Filtro')").first,
+    page.locator(".panel-heading:has-text('Filtro')").first,
+    page.locator("[class*='header']:has-text('Filtro')").first,
+    page.locator("[class*='filter']:has-text('Filtro')").first,
+    page.locator("*").filter(has_text="Filtro").nth(0),
+]
+
+
 def expandir_filtro(page):
     """
     Garante que o painel de filtros está expandido.
@@ -155,25 +164,20 @@ def expandir_filtro(page):
     """
     page.wait_for_timeout(800)
 
-    # Se BUSCA já está visível → filtro já expandido
+    # Aguarda até 3s pelo BUSCA (cobre atrasos de animação do SPA/Kendo).
+    # is_visible() sem timeout retorna falso-negativo durante transições CSS,
+    # fazendo o clique COLAPSAR o filtro ao invés de expandir.
     try:
-        if page.locator("button:has-text('BUSCA')").first.is_visible():
+        if page.locator("button:has-text('BUSCA')").first.is_visible(timeout=3000):
             print("  [FILTRO] Já expandido.")
             return
     except Exception:
         pass
 
     print("  [FILTRO] Expandindo painel de filtros...")
-    ok = clicar(page, [
-        page.locator(".card-header:has-text('Filtro')").first,
-        page.locator(".panel-heading:has-text('Filtro')").first,
-        page.locator("[class*='header']:has-text('Filtro')").first,
-        page.locator("[class*='filter']:has-text('Filtro')").first,
-        page.locator("*").filter(has_text="Filtro").nth(0),
-    ], "barra Filtro", timeout=5000)
+    ok = clicar(page, _FILTRO_LOCATORS(page), "barra Filtro", timeout=5000)
 
     if not ok:
-        # Fallback via JS: clica no primeiro elemento com texto "Filtro"
         page.evaluate("""
             () => {
                 const all = Array.from(document.querySelectorAll('*'));
@@ -187,6 +191,16 @@ def expandir_filtro(page):
         """)
 
     page.wait_for_timeout(1200)
+
+    # Verifica se a expansão funcionou: se BUSCA ainda não visível,
+    # o clique colocou o filtro num estado de COLAPSO — clicar novamente para abrir.
+    try:
+        if not page.locator("button:has-text('BUSCA')").first.is_visible(timeout=1500):
+            print("  [FILTRO] Toggle invertido — re-clicando para abrir...")
+            clicar(page, _FILTRO_LOCATORS(page), "barra Filtro re-open", timeout=5000)
+            page.wait_for_timeout(1200)
+    except Exception:
+        pass
 
 
 # ================================================================
@@ -626,8 +640,9 @@ def baixar_excel(page) -> str:
     except Exception:
         filtro_expandido = False
 
-    # Sempre colapsar (se expandido) e re-expandir: a animação de expansão do Kendo
-    # reinicializa o widget Grid e garante que saveAsExcel() funcione.
+    # _COLAPSAR_JS é mantido apenas para uso nos retries abaixo.
+    # NÃO colapsar o filtro antes do primeiro Excel: colapsar limpa os dados do
+    # Kendo Grid e faz saveAsExcel() retornar sem disparar o download.
     _COLAPSAR_JS = """
         () => {
             const all = Array.from(document.querySelectorAll('*'));
@@ -641,12 +656,37 @@ def baixar_excel(page) -> str:
         }
     """
     if filtro_expandido:
-        print("  [FILTRO] Expandido — colapsando para forçar reinicialização do Kendo Grid...")
-        page.evaluate(_COLAPSAR_JS)
-        get_page(page).wait_for_timeout(1200)
+        # Filtro já expandido com dados do BUSCA — não colapsar, ir direto ao Excel
+        print("  [FILTRO] Expandido — Excel direto (sem collapse)...")
+        get_page(page).wait_for_timeout(500)
+    else:
+        expandir_filtro(page)
+        get_page(page).wait_for_timeout(1000)
 
-    expandir_filtro(page)
-    get_page(page).wait_for_timeout(1000)
+    # Pre-check: grid com 0 linhas = nenhum dado; download não vai disparar.
+    # Retorna None imediatamente em vez de esperar 120s de timeout.
+    try:
+        total_pre = page.evaluate("""
+            () => {
+                const btn = document.querySelector('button.excel[data-bind]');
+                if (!btn) return -1;
+                const gridId = btn.getAttribute('data-grid-to-export');
+                if (gridId && typeof $ !== 'undefined') {
+                    try {
+                        const grid = $('#' + gridId).data('kendoGrid');
+                        if (grid && grid.dataSource) return grid.dataSource.total();
+                    } catch(e) {}
+                }
+                return -1;
+            }
+        """)
+        if total_pre == 0:
+            print("  [EXCEL] Grid vazio (0 linhas) — nenhum dado para exportar.")
+            return None
+        if total_pre > 0:
+            print(f"  [EXCEL] Grid com {total_pre} linhas.")
+    except Exception:
+        pass
 
     get_page(page).screenshot(path="debug_06_antes_excel.png")
 
@@ -658,40 +698,26 @@ def baixar_excel(page) -> str:
         pg = get_page(page)
         with pg.expect_download(timeout=120000) as download_info:
 
-            EXCEL_LOCATORS = [
-                page.get_by_role("button", name="EXCEL"),
-                page.get_by_role("button", name="Excel"),
-                page.get_by_text("EXCEL", exact=True),
-                page.get_by_text("Excel", exact=True),
-                page.locator("button:has-text('EXCEL')").first,
-                page.locator("button:has-text('Excel')").first,
-                page.locator("a:has-text('Excel')").first,
-                page.locator("[title='Excel']").first,
-                page.locator(".k-grid-toolbar button").last,
-            ]
-
-            # Tenta clicar EXCEL + aguardar CONFIRMAR até 3 vezes
+            # Tenta kendo-saveAsExcel até 3 vezes (sem clicar o botão EXCEL)
             for tentativa_excel in range(3):
                 if tentativa_excel > 0:
-                    print(f"  [EXCEL] Retry {tentativa_excel} — recolapsando e re-expandindo filtro...")
+                    print(f"  [EXCEL] Retry {tentativa_excel}...")
                     page.wait_for_timeout(2000)
-                    # Sempre colapsar e re-expandir nos retries para reinicializar o Kendo Grid
+                    # Só expandir se o filtro estiver colapsado — NUNCA colapsar manualmente,
+                    # pois o _COLAPSAR_JS limpa os dados do Grid e saveAsExcel para de funcionar.
                     try:
                         busca_visivel = page.locator("button:has-text('BUSCA')").first.is_visible(timeout=500)
                     except Exception:
                         busca_visivel = False
-                    if busca_visivel:
-                        page.evaluate(_COLAPSAR_JS)
-                        get_page(page).wait_for_timeout(1200)
-                    expandir_filtro(page)
-                    page.wait_for_timeout(1500)
+                    if not busca_visivel:
+                        expandir_filtro(page)
+                        page.wait_for_timeout(1500)
 
-                ok_excel = clicar(page, EXCEL_LOCATORS, "EXCEL", timeout=1000)
-                # Cascade de acionamento do export — do mais direto ao mais genérico:
-                # 1. Kendo Grid saveAsExcel() — API pública, bypassa Knockout/eventos
-                # 2. Knockout contextFor().exportExcel() — chama ViewModel direto
-                # 3. MouseEvent dispatch — evento mais realista que el.click()
-                # 4. el.click() — fallback final (sintético, menos confiável)
+                # NÃO clicar o botão EXCEL via Playwright: quando visível (filtro expandido),
+                # o click dispara o fluxo CONFIRMAR do EVUP que bloqueia o download e
+                # impede que kendo-saveAsExcel funcione em seguida.
+                # kendo-saveAsExcel é o único método que funciona em headless — usar direto.
+                # Cascade JS de acionamento do export:
                 try:
                     resultado = page.evaluate("""
                         () => {
@@ -704,10 +730,12 @@ def baixar_excel(page) -> str:
                                 try {
                                     const grid = $('#' + gridId).data('kendoGrid');
                                     if (grid && typeof grid.saveAsExcel === 'function') {
+                                        const total = grid.dataSource ? grid.dataSource.total() : -1;
+                                        if (total === 0) return 'empty_grid';
                                         grid.saveAsExcel();
-                                        return 'kendo-saveAsExcel';
+                                        return 'kendo-saveAsExcel:rows=' + total;
                                     }
-                                } catch(e) {}
+                                } catch(e) { return 'kendo-err:' + e.message; }
                             }
 
                             // Opção 2: Knockout ViewModel direto
@@ -739,10 +767,13 @@ def baixar_excel(page) -> str:
                     print(f"  [EXCEL-JS] {resultado}")
                 except Exception as e_js:
                     print(f"  [EXCEL-JS] Erro: {e_js}")
+                    resultado = None
 
-                # Aguarda até 10s pelo botão CONFIRMAR.
-                # saveAsExcel() faz download silencioso (sem CONFIRMAR) em ~3s;
-                # o fluxo Knockout legado mostra CONFIRMAR em até ~5s.
+                # kendo-saveAsExcel dispara o download sem CONFIRMAR — sair do loop imediatamente.
+                if resultado and resultado.startswith('kendo-saveAsExcel:'):
+                    break
+
+                # Outros métodos (Knockout, MouseEvent) mostram CONFIRMAR — aguardar até 10s.
                 confirmado = False
                 for t in range(10):
                     page.wait_for_timeout(1000)
@@ -1377,13 +1408,20 @@ def main():
     print(f"  Headless: {HEADLESS}")
     print(f"{'='*55}\n")
 
-    # ── Sessão única: um login, um download, dois relatórios ─────
-    # Ambos os relatórios (proximos_dias e criados_hoje) usam o
-    # mesmo Excel (filtro DATA PROGRAMADA = hoje → hoje+14).
-    # A diferenciação é feita em Python após o download.
-    # Usar duas sessões separadas causava falha do 2º browser no Railway.
-    caminho_excel = None
-    print("\n[DOWNLOAD] Iniciando sessão única...")
+    # Data fim ampla para capturar todos os agendamentos criados hoje
+    # independente de quando estão programados (inclui >14 dias)
+    data_fim_largo  = hoje + timedelta(days=365)
+    fim_str_largo   = data_fim_largo.strftime("%d/%m/%Y")
+
+    # ── Sessão única: um login, dois downloads, dois relatórios ──
+    # proximos_dias: DATA PROGRAMADA = hoje → hoje+14
+    # criados_hoje:  DATA CRIAÇÃO = hoje + DATA PROGRAMADA = hoje → hoje+365
+    # (mesmo browser — evita falha do 2º processo Chromium no Railway)
+    caminho_proximos = None
+    caminho_criados  = None
+    erro_download    = False
+
+    print("\n[DOWNLOAD] Iniciando sessão única (2 buscas)...")
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=HEADLESS,
@@ -1398,6 +1436,9 @@ def main():
         page.on("dialog", lambda dialog: dialog.accept())
         try:
             login_evup(page)
+
+            # ── Busca 1: Próximos Dias (DATA PROGRAMADA = hoje → hoje+14) ──
+            print("\n[DOWNLOAD-1] proximos_dias...")
             frame_agen = navegar_para_agendamentos(page)
             expandir_filtro(frame_agen)
             configurar_datas(frame_agen, inicio_str, fim_str, hoje, data_fim_excel)
@@ -1405,9 +1446,32 @@ def main():
             limpar_coluna_anterior(frame_agen)
             expandir_filtro(frame_agen)
             buscar_e_aguardar(frame_agen)
-            caminho_excel = baixar_excel(frame_agen)
-            print(f"[DOWNLOAD] Excel: {caminho_excel}")
+            caminho_proximos = baixar_excel(frame_agen)
+            print(f"[DOWNLOAD-1] Excel proximos_dias: {caminho_proximos}")
+
+            # ── Busca 2: Criados Hoje ────────────────────────────────────
+            # Após o primeiro download, o Kendo Grid fica em estado pós-download
+            # que impede a visibilidade dos inputs mesmo após re-navegação SPA
+            # (o iframe é reutilizado sem reload). page.reload() reseta o DOM
+            # completamente mantendo o cookie de sessão — sem necessidade de re-login.
+            print("\n[DOWNLOAD-2] criados_hoje — recarregando página para estado limpo...")
+            page.reload(wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(4000)  # aguarda SPA inicializar após reload
+            frame_agen2 = navegar_para_agendamentos(page)
+            expandir_filtro(frame_agen2)
+            # DATA PROGRAMADA ampla → captura todos criados hoje (inclusive além de 14d)
+            configurar_datas(frame_agen2, inicio_str, fim_str_largo, hoje, data_fim_largo)
+            configurar_nivel_detalhamento(frame_agen2)
+            limpar_coluna_anterior(frame_agen2)
+            # DATA CRIAÇÃO = hoje — filtro principal do relatório
+            configurar_data_criacao(frame_agen2, inicio_str)
+            expandir_filtro(frame_agen2)
+            buscar_e_aguardar(frame_agen2)
+            caminho_criados = baixar_excel(frame_agen2)
+            print(f"[DOWNLOAD-2] Excel criados_hoje: {caminho_criados}")
+
         except Exception as e:
+            erro_download = True
             print(f"\nERRO CRÍTICO: {e}")
             try:
                 page.screenshot(path="debug_erro_download.png")
@@ -1419,26 +1483,26 @@ def main():
         finally:
             browser.close()
 
-    if not caminho_excel:
+    if not caminho_proximos:
         print(f"\n[{datetime.now(TZ_SP).strftime('%H:%M:%S')}] Encerrado com erro no download.\n")
         return
 
+    # ── Próximos Dias ────────────────────────────────────────────
     try:
-        df   = ler_excel(caminho_excel)
-        mapa = mapear_colunas(df)
+        df1   = ler_excel(caminho_proximos)
+        mapa1 = mapear_colunas(df1)
     except Exception as e:
-        print(f"\nERRO ao ler Excel: {e}")
+        print(f"\nERRO ao ler Excel proximos_dias: {e}")
         return
 
-    # ── Próximos Dias ────────────────────────────────────────────
     print("\n--- GERANDO: Próximos Dias ---")
     try:
-        caminho_img, img_b64 = gerar_imagem_proximos_dias(df, mapa, hoje, data_ref, hora_ref)
+        caminho_img, img_b64 = gerar_imagem_proximos_dias(df1, mapa1, hoje, data_ref, hora_ref)
     except Exception as e:
         print(f"  ERRO ao gerar imagem: {e}")
         caminho_img, img_b64 = None, None
 
-    msg_proximos = gerar_msg_proximos_dias(df, mapa, data_ref, hora_ref, hoje)
+    msg_proximos = gerar_msg_proximos_dias(df1, mapa1, data_ref, hora_ref, hoje)
     if caminho_img:
         print(f"  Imagem: {caminho_img}")
         enviar_webhook(msg_proximos or "", "proximos_dias", data_ref, hora_ref, img_b64)
@@ -1449,19 +1513,36 @@ def main():
         print("  Sem dados para 'Próximos Dias'.")
 
     # ── Criados Hoje ─────────────────────────────────────────────
-    col_cri = mapa.get("data_criacao")
-    if col_cri:
-        datas_c = pd.to_datetime(df[col_cri], dayfirst=True, errors="coerce")
-        n_hoje  = (datas_c.dt.date == hoje).sum()
-        print(f"[DEBUG] Total linhas: {len(df)} | DATA CRIAÇÃO=hoje: {n_hoje} | máx: {datas_c.max()}")
-
-    print("\n--- GERANDO: Criados Hoje ---")
-    caminho_cri, img_b64_criados = gerar_imagem_criados_hoje(df, mapa, hoje, data_ref, hora_ref)
-    if img_b64_criados:
-        print(f"  Imagem: {caminho_cri}")
-        enviar_webhook("Agendamentos Criados Hoje", "criados_hoje", data_ref, hora_ref, img_b64_criados)
+    if not caminho_criados:
+        if erro_download:
+            print("  [criados_hoje] Download falhou — pulando.")
+        else:
+            # Grid vazio: nenhum agendamento criado hoje (cenário válido)
+            print("  [criados_hoje] 0 agendamentos criados hoje — enviando aviso.")
+            msg_zero = f"📋 Criados Hoje — {data_ref} {hora_ref}\n\nNenhum agendamento novo registrado até o momento."
+            enviar_webhook(msg_zero, "criados_hoje", data_ref, hora_ref)
     else:
-        print("  Sem dados para 'Criados Hoje'.")
+        try:
+            df2   = ler_excel(caminho_criados)
+            mapa2 = mapear_colunas(df2)
+        except Exception as e:
+            print(f"\nERRO ao ler Excel criados_hoje: {e}")
+            df2, mapa2 = None, None
+
+        if df2 is not None:
+            col_cri = mapa2.get("data_criacao")
+            if col_cri:
+                datas_c = pd.to_datetime(df2[col_cri], dayfirst=True, errors="coerce")
+                n_hoje  = (datas_c.dt.date == hoje).sum()
+                print(f"[DEBUG] Total linhas criados: {len(df2)} | DATA CRIAÇÃO=hoje: {n_hoje} | máx: {datas_c.max()}")
+
+            print("\n--- GERANDO: Criados Hoje ---")
+            caminho_cri, img_b64_criados = gerar_imagem_criados_hoje(df2, mapa2, hoje, data_ref, hora_ref)
+            if img_b64_criados:
+                print(f"  Imagem: {caminho_cri}")
+                enviar_webhook("Agendamentos Criados Hoje", "criados_hoje", data_ref, hora_ref, img_b64_criados)
+            else:
+                print("  Sem dados para 'Criados Hoje'.")
 
     print(f"\n[{datetime.now(TZ_SP).strftime('%H:%M:%S')}] Concluído.\n")
 
