@@ -1368,6 +1368,43 @@ def gerar_imagem_criados_hoje(df: pd.DataFrame, mapa: dict, hoje, data_ref: str,
     return caminho, img_b64
 
 
+def gerar_imagem_zero_criados(data_ref: str, hora_ref: str):
+    """Gera imagem simples indicando 0 agendamentos criados hoje."""
+    fig_w, fig_h = 6.3, 1.6
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    ax.set_xlim(0, fig_w)
+    ax.set_ylim(0, fig_h)
+    ax.axis("off")
+    fig.patch.set_facecolor("white")
+
+    # Cabeçalho azul
+    ax.add_patch(plt.Rectangle((0.25, 0.9), 5.8, 0.48,
+                                facecolor="#4472C4", edgecolor="#BBBBBB",
+                                linewidth=0.5, zorder=1))
+    ax.text(fig_w / 2, 1.14,
+            f"Agendamentos Criados Hoje  —  {data_ref}  {hora_ref}",
+            ha="center", va="center", fontsize=10.5,
+            fontweight="bold", color="white", zorder=2)
+
+    # Linha de conteúdo
+    ax.add_patch(plt.Rectangle((0.25, 0.45), 5.8, 0.42,
+                                facecolor="#F5F5F5", edgecolor="#BBBBBB",
+                                linewidth=0.5, zorder=1))
+    ax.text(fig_w / 2, 0.66,
+            "Nenhum agendamento de avaliação criado hoje.",
+            ha="center", va="center", fontsize=9.5, color="#555555", zorder=2)
+
+    caminho = os.path.join(DOWNLOADS, f"criados_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+    plt.savefig(caminho, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.close()
+
+    with open(caminho, "rb") as f:
+        img_b64 = "data:image/png;base64," + base64.b64encode(f.read()).decode()
+
+    print(f"[IMG-CRIACAO] Imagem zero gerada: {caminho}")
+    return caminho, img_b64
+
+
 # ================================================================
 # ENVIO WEBHOOK
 # ================================================================
@@ -1517,10 +1554,12 @@ def main():
         if erro_download:
             print("  [criados_hoje] Download falhou — pulando.")
         else:
-            # Grid vazio: nenhum agendamento criado hoje (cenário válido)
-            print("  [criados_hoje] 0 agendamentos criados hoje — enviando aviso.")
-            msg_zero = f"📋 Criados Hoje — {data_ref} {hora_ref}\n\nNenhum agendamento novo registrado até o momento."
-            enviar_webhook(msg_zero, "criados_hoje", data_ref, hora_ref)
+            # Grid vazio: nenhum agendamento criado hoje (cenário válido).
+            # Gera imagem para garantir que o n8n/Z-API envie a mensagem WhatsApp.
+            print("  [criados_hoje] 0 agendamentos criados hoje — gerando imagem.")
+            _, img_b64_zero = gerar_imagem_zero_criados(data_ref, hora_ref)
+            msg_zero = f"📋 Criados Hoje — {data_ref} {hora_ref}\n\nNenhum agendamento de avaliação criado hoje."
+            enviar_webhook(msg_zero, "criados_hoje", data_ref, hora_ref, img_b64_zero)
     else:
         try:
             df2   = ler_excel(caminho_criados)
