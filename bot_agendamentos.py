@@ -564,47 +564,58 @@ def configurar_servico_avulso(page, valor: str = "AVALIAÇÃO"):
 def configurar_data_criacao(page, hoje_str: str):
     """
     Preenche o campo 'Data de Criação' (txtCreateDate) do filtro EVUP
-    com o range hoje–hoje, para baixar apenas os agendamentos criados hoje.
+    com o range hoje–hoje. Deve ser chamada APÓS qualquer interação com Select2
+    (ex: configurar_servico_avulso), pois Select2 dispara eventos que limpam
+    o daterange picker.
+    Usa typing + verificação + JS fallback para garantir que o valor persista.
     """
     print(f"\n[DATA-CRIACAO] Configurando txtCreateDate = {hoje_str}")
     texto_range = f"{hoje_str} - {hoje_str}"
 
-    # Limpa qualquer valor anterior e digita o range
-    for sel in [
-        "input[name='txtCreateDate']",
-        "input[id*='CreateDate']",
-        "input[id*='createDate']",
-    ]:
+    def _js_set(p):
+        r = p.evaluate(f"""
+            () => {{
+                const inp = document.querySelector("input[name='txtCreateDate']");
+                if (!inp) return 'not_found';
+                inp.value = '{texto_range}';
+                inp.dispatchEvent(new Event('input',  {{bubbles:true}}));
+                inp.dispatchEvent(new Event('change', {{bubbles:true}}));
+                return 'js_ok:' + inp.value;
+            }}
+        """)
+        return r
+
+    for sel in ["input[name='txtCreateDate']", "input[id*='CreateDate']"]:
         try:
             loc = page.locator(sel).first
-            if loc.is_visible(timeout=2000):
-                loc.click(click_count=3)
-                page.wait_for_timeout(200)
-                loc.fill("")
-                page.wait_for_timeout(200)
-                loc.type(texto_range, delay=40)
+            if not loc.is_visible(timeout=2000):
+                continue
+            # Faz o click triple para selecionar tudo → fill limpa → type escreve
+            loc.click(click_count=3)
+            page.wait_for_timeout(150)
+            loc.fill("")
+            page.wait_for_timeout(150)
+            loc.type(texto_range, delay=35)
+            page.wait_for_timeout(200)
+            get_page(page).keyboard.press("Escape")  # fecha calendar popup se aberto
+            page.wait_for_timeout(150)
+            get_page(page).keyboard.press("Tab")
+            page.wait_for_timeout(400)
+            val = loc.input_value()
+            print(f"  [DATA-CRIACAO] Após typing: '{val}'")
+            # Verifica se o valor ficou; se não, reforça via JS
+            if hoje_str not in val:
+                r = _js_set(page)
                 page.wait_for_timeout(300)
-                get_page(page).keyboard.press("Tab")
-                page.wait_for_timeout(400)
                 val = loc.input_value()
-                print(f"  [DATA-CRIACAO] Preenchido via {sel!r}: '{val}'")
-                return True
+                print(f"  [DATA-CRIACAO] Após JS reforço: '{val}' (js={r})")
+            return True
         except Exception:
             continue
 
-    # Fallback via JS
-    resultado = page.evaluate(f"""
-        () => {{
-            const inp = document.querySelector("input[name='txtCreateDate']");
-            if (!inp) return 'nao_encontrado';
-            inp.focus();
-            inp.value = '{texto_range}';
-            inp.dispatchEvent(new Event('input', {{bubbles:true}}));
-            inp.dispatchEvent(new Event('change', {{bubbles:true}}));
-            return 'js_ok:' + inp.value;
-        }}
-    """)
-    print(f"  [DATA-CRIACAO] JS fallback: {resultado}")
+    # Fallback JS puro
+    r = _js_set(page)
+    print(f"  [DATA-CRIACAO] JS fallback: {r}")
     page.wait_for_timeout(400)
     return False
 
@@ -1603,9 +1614,11 @@ def main():
             configurar_datas(frame_agen2, inicio_str, fim_str, hoje, data_fim_excel)
             configurar_nivel_detalhamento(frame_agen2)
             limpar_coluna_anterior(frame_agen2)
-            configurar_data_criacao(frame_agen2, inicio_str)
             configurar_servico_avulso(frame_agen2, "AVALIAÇÃO")
             expandir_filtro(frame_agen2)
+            # txtCreateDate DEVE ser o último filtro antes do BUSCA —
+            # interações anteriores com Select2 disparam eventos que limpam o daterange picker
+            configurar_data_criacao(frame_agen2, inicio_str)
             buscar_e_aguardar(frame_agen2)
             caminho_criados = baixar_excel(frame_agen2, skip_empty_check=True)
             print(f"[DOWNLOAD-2] Excel: {caminho_criados}")
