@@ -52,7 +52,7 @@ DOWNLOADS = os.environ.get(
     os.path.join(os.path.expanduser("~"), "Downloads") if os.name == "nt" else "/tmp"
 )
 DIAS_FRENTE       = 14   # Janela exibida na tabela "Próximos Dias"
-DIAS_FRENTE_EXCEL = 14   # Range do Excel (hoje até d+14)
+DIAS_FRENTE_EXCEL = 14
 
 # Campos obrigatórios no Nível de Detalhamento
 CAMPOS_DETALHAMENTO = [
@@ -465,6 +465,99 @@ def configurar_datas(page, inicio_str: str, fim_str: str, data_inicio, data_fim)
 
 
 # ================================================================
+# CONFIGURAR SERVIÇO AVULSO (Select2)
+# ================================================================
+
+def configurar_servico_avulso(page, valor: str = "AVALIAÇÃO"):
+    """
+    Seleciona 'AVALIAÇÃO' no dropdown 'Serviço Avulso' do filtro EVUP.
+    O campo usa Select2 — abre clicando no container e seleciona via texto.
+    """
+    print(f"\n[SERVICO] Configurando Serviço Avulso = {valor}...")
+
+    resultado = page.evaluate(f"""
+        () => {{
+            // Encontra o label 'Serviço Avulso' e sobe até o container Select2
+            const labels = Array.from(document.querySelectorAll('label, span, div, p'));
+            const lbl = labels.find(el =>
+                el.offsetParent !== null &&
+                el.textContent.trim().startsWith('Serviço Avulso')
+            );
+            if (!lbl) return 'label_not_found';
+
+            // Sobe até o form-group ou container e acha o Select2
+            let container = lbl.closest('.form-group, .col-md-3, .col-sm-3, .form-inline, div');
+            for (let i = 0; i < 5 && container; i++) {{
+                const s2 = container.querySelector('.select2-container');
+                if (s2) {{
+                    s2.click();
+                    return 'opened:' + s2.id;
+                }}
+                container = container.parentElement;
+            }}
+            return 'select2_not_found';
+        }}
+    """)
+    print(f"  [SERVICO] Open resultado: {resultado}")
+    get_page(page).wait_for_timeout(600)
+
+    # Digita o valor no input do Select2 aberto
+    try:
+        inp = page.locator(".select2-drop:not([style*='display: none']) input.select2-input").first
+        if inp.is_visible(timeout=2000):
+            inp.type(valor[:4], delay=50)  # digita os primeiros 4 chars
+            get_page(page).wait_for_timeout(500)
+    except Exception:
+        pass
+
+    # Clica na opção que aparece no dropdown
+    try:
+        opcao = page.locator(
+            f".select2-results li:has-text('{valor}'), "
+            f".select2-result-label:has-text('{valor}')"
+        ).first
+        if opcao.is_visible(timeout=2000):
+            opcao.click()
+            print(f"  [SERVICO] '{valor}' selecionado.")
+            get_page(page).wait_for_timeout(400)
+            return True
+    except Exception:
+        pass
+
+    # Fallback: tenta via JS direto no select oculto
+    resultado2 = page.evaluate(f"""
+        () => {{
+            const labels = Array.from(document.querySelectorAll('label, span, div'));
+            const lbl = labels.find(el =>
+                el.offsetParent !== null &&
+                el.textContent.trim().startsWith('Serviço Avulso')
+            );
+            if (!lbl) return 'no_label';
+            let container = lbl.closest('.form-group, .col-md-3, .col-sm-3, div');
+            for (let i = 0; i < 5 && container; i++) {{
+                const sel = container.querySelector('select');
+                if (sel) {{
+                    const opt = Array.from(sel.options).find(o =>
+                        o.text.toUpperCase().includes('{valor.upper()}')
+                    );
+                    if (opt) {{
+                        sel.value = opt.value;
+                        sel.dispatchEvent(new Event('change', {{bubbles:true}}));
+                        return 'js_select:' + opt.text;
+                    }}
+                    return 'option_not_found:' + Array.from(sel.options).map(o=>o.text).join(',');
+                }}
+                container = container.parentElement;
+            }}
+            return 'select_not_found';
+        }}
+    """)
+    print(f"  [SERVICO] JS fallback: {resultado2}")
+    get_page(page).wait_for_timeout(300)
+    return False
+
+
+# ================================================================
 # CONFIGURAR FILTRO DE DATA DE CRIAÇÃO (txtCreateDate)
 # ================================================================
 
@@ -629,42 +722,30 @@ def buscar_e_aguardar(page):
 # DOWNLOAD DO EXCEL
 # ================================================================
 
-def baixar_excel(page) -> str:
+def baixar_excel(page, skip_empty_check: bool = False) -> str:
     """
     Expande o painel Filtro (onde fica o botão EXCEL) e faz o download.
-    Após o BUSCA o painel colapsa — é preciso expandir novamente.
+    O EVUP colapsa o filtro automaticamente após BUSCA (proximos_dias). O ciclo
+    collapse→expand que o SPA faz é o que inicializa o Kendo dataSource.
+    NUNCA colapsar manualmente: limpa o dataSource e saveAsExcel retorna 0 linhas.
+
+    skip_empty_check=True: ignora o total=0 do dataSource e tenta o saveAsExcel
+    mesmo assim. Usar para DOWNLOAD-2 (DATA CRIAÇÃO), onde o SPA não auto-colapsa
+    e o dataSource.total() retorna 0 mesmo havendo dados.
     """
     print("\n[EXCEL] Preparando filtro para EXCEL...")
-    try:
-        filtro_expandido = page.locator("button:has-text('BUSCA')").first.is_visible(timeout=1000)
-    except Exception:
-        filtro_expandido = False
 
-    # _COLAPSAR_JS é mantido apenas para uso nos retries abaixo.
-    # NÃO colapsar o filtro antes do primeiro Excel: colapsar limpa os dados do
-    # Kendo Grid e faz saveAsExcel() retornar sem disparar o download.
-    _COLAPSAR_JS = """
-        () => {
-            const all = Array.from(document.querySelectorAll('*'));
-            const el = all.find(e =>
-                e.offsetParent !== null &&
-                e.innerText?.trim() === 'Filtro' &&
-                e.children.length <= 5
-            );
-            if (el) { el.click(); return true; }
-            return false;
-        }
-    """
-    if filtro_expandido:
-        # Filtro já expandido com dados do BUSCA — não colapsar, ir direto ao Excel
-        print("  [FILTRO] Expandido — Excel direto (sem collapse)...")
-        get_page(page).wait_for_timeout(500)
-    else:
-        expandir_filtro(page)
-        get_page(page).wait_for_timeout(1000)
+    # Aguarda o SPA estabilizar após BUSCA (animação de colapso pode estar em curso)
+    get_page(page).wait_for_timeout(2000)
 
-    # Pre-check: grid com 0 linhas = nenhum dado; download não vai disparar.
-    # Retorna None imediatamente em vez de esperar 120s de timeout.
+    # Expande o filtro se estiver colapsado (o SPA auto-colapsa após BUSCA na view proximos_dias).
+    # NUNCA colapsar manualmente: colapso manual limpa o Kendo dataSource
+    # e kendo-saveAsExcel retorna 0 linhas mesmo havendo dados na tela.
+    expandir_filtro(page)
+    get_page(page).wait_for_timeout(1000)
+
+    # Pre-check: grid com 0 linhas = sem dados; retorna None imediatamente.
+    # skip_empty_check=True pula este retorno antecipado e tenta o download mesmo com total=0.
     try:
         total_pre = page.evaluate("""
             () => {
@@ -680,11 +761,10 @@ def baixar_excel(page) -> str:
                 return -1;
             }
         """)
-        if total_pre == 0:
-            print("  [EXCEL] Grid vazio (0 linhas) — nenhum dado para exportar.")
+        print(f"  [EXCEL] dataSource.total() = {total_pre}")
+        if total_pre == 0 and not skip_empty_check:
+            print("  [EXCEL] Grid vazio — nenhum dado para exportar.")
             return None
-        if total_pre > 0:
-            print(f"  [EXCEL] Grid com {total_pre} linhas.")
     except Exception:
         pass
 
@@ -693,10 +773,14 @@ def baixar_excel(page) -> str:
     # Registra tempo antes do clique para encontrar o arquivo depois
     ts_antes = time.time()
 
+    # skip_empty_check usa timeout menor — se o grid tiver 0 linhas reais,
+    # o download nunca vem e não queremos travar 2 minutos.
+    download_timeout = 30000 if skip_empty_check else 120000
+
     try:
         # Tenta interceptar o download diretamente (download acontece na page principal)
         pg = get_page(page)
-        with pg.expect_download(timeout=120000) as download_info:
+        with pg.expect_download(timeout=download_timeout) as download_info:
 
             # Tenta kendo-saveAsExcel até 3 vezes (sem clicar o botão EXCEL)
             for tentativa_excel in range(3):
@@ -718,56 +802,63 @@ def baixar_excel(page) -> str:
                 # impede que kendo-saveAsExcel funcione em seguida.
                 # kendo-saveAsExcel é o único método que funciona em headless — usar direto.
                 # Cascade JS de acionamento do export:
-                try:
-                    resultado = page.evaluate("""
-                        () => {
-                            const btn = document.querySelector('button.excel[data-bind]');
-                            if (!btn) return 'btn-not-found';
-                            const gridId = btn.getAttribute('data-grid-to-export');
+                skip_js = "true" if skip_empty_check else "false"
+                js_code = """
+                    (skipEmptyCheck) => {
+                        const btn = document.querySelector('button.excel[data-bind]');
+                        if (!btn) return 'btn-not-found';
+                        const gridId = btn.getAttribute('data-grid-to-export');
 
-                            // Opção 1: Kendo Grid saveAsExcel direto
-                            if (gridId && typeof $ !== 'undefined') {
-                                try {
-                                    const grid = $('#' + gridId).data('kendoGrid');
-                                    if (grid && typeof grid.saveAsExcel === 'function') {
-                                        const total = grid.dataSource ? grid.dataSource.total() : -1;
-                                        if (total === 0) return 'empty_grid';
-                                        grid.saveAsExcel();
-                                        return 'kendo-saveAsExcel:rows=' + total;
-                                    }
-                                } catch(e) { return 'kendo-err:' + e.message; }
-                            }
-
-                            // Opção 2: Knockout ViewModel direto
-                            if (typeof ko !== 'undefined') {
-                                try {
-                                    const ctx = ko.contextFor(btn);
-                                    if (ctx && ctx.$data && typeof ctx.$data.exportExcel === 'function') {
-                                        ctx.$data.exportExcel(ctx.$data, null);
-                                        return 'ko-contextFor';
-                                    }
-                                } catch(e) {}
-                                try {
-                                    const vm = ko.dataFor(btn);
-                                    if (vm && typeof vm.exportExcel === 'function') {
-                                        vm.exportExcel(vm, null);
-                                        return 'ko-dataFor';
-                                    }
-                                } catch(e) {}
-                            }
-
-                            // Opção 3: MouseEvent realista (bubbles, cancelable)
-                            btn.dispatchEvent(new MouseEvent('click', {
-                                bubbles: true, cancelable: true,
-                                view: window, detail: 1, buttons: 1
-                            }));
-                            return 'mouseEvent';
+                        // Opção 1: Kendo Grid saveAsExcel direto
+                        if (gridId && typeof $ !== 'undefined') {
+                            try {
+                                const grid = $('#' + gridId).data('kendoGrid');
+                                if (grid && typeof grid.saveAsExcel === 'function') {
+                                    const total = grid.dataSource ? grid.dataSource.total() : -1;
+                                    if (total === 0 && !skipEmptyCheck) return 'empty_grid';
+                                    grid.saveAsExcel();
+                                    return 'kendo-saveAsExcel:rows=' + total;
+                                }
+                            } catch(e) { return 'kendo-err:' + e.message; }
                         }
-                    """)
+
+                        // Opção 2: Knockout ViewModel direto
+                        if (typeof ko !== 'undefined') {
+                            try {
+                                const ctx = ko.contextFor(btn);
+                                if (ctx && ctx.$data && typeof ctx.$data.exportExcel === 'function') {
+                                    ctx.$data.exportExcel(ctx.$data, null);
+                                    return 'ko-contextFor';
+                                }
+                            } catch(e) {}
+                            try {
+                                const vm = ko.dataFor(btn);
+                                if (vm && typeof vm.exportExcel === 'function') {
+                                    vm.exportExcel(vm, null);
+                                    return 'ko-dataFor';
+                                }
+                            } catch(e) {}
+                        }
+
+                        // Opção 3: MouseEvent realista (bubbles, cancelable)
+                        btn.dispatchEvent(new MouseEvent('click', {
+                            bubbles: true, cancelable: true,
+                            view: window, detail: 1, buttons: 1
+                        }));
+                        return 'mouseEvent';
+                    }
+                """
+                try:
+                    resultado = page.evaluate(js_code, skip_empty_check)
                     print(f"  [EXCEL-JS] {resultado}")
                 except Exception as e_js:
                     print(f"  [EXCEL-JS] Erro: {e_js}")
                     resultado = None
+
+                # kendo-saveAsExcel com 0 linhas não gera download — retorna None imediatamente.
+                if resultado == 'kendo-saveAsExcel:rows=0':
+                    print("  [EXCEL] Grid confirmado vazio (0 linhas) — sem download.")
+                    return None
 
                 # kendo-saveAsExcel dispara o download sem CONFIRMAR — sair do loop imediatamente.
                 if resultado and resultado.startswith('kendo-saveAsExcel:'):
@@ -896,12 +987,24 @@ def mapear_colunas(df: pd.DataFrame) -> dict:
 
 
 def normalizar_data(serie: pd.Series) -> pd.Series:
-    """Converte série de datas para date objects."""
+    """Converte série de datas para date objects.
+
+    O EVUP exporta 'Data Agendada' como batch timestamp no dia anterior às 23:59:32
+    (ex: agendamento de 31/07 → exportado como '2026-07-30 23:59:32').
+    Quando detectado esse padrão (hora=23, min=59), soma +1 dia para recuperar a
+    data real do agendamento.
+    """
     def _conv(v):
         if pd.isna(v) or str(v).strip() in ("", "nan", "NaT"):
             return None
         try:
-            return pd.to_datetime(str(v), dayfirst=True, errors="coerce").date()
+            d = pd.to_datetime(str(v), dayfirst=False, errors="coerce")
+            if pd.isna(d):
+                return None
+            dt = d.date()
+            if d.hour == 23 and d.minute == 59:
+                dt = dt + timedelta(days=1)
+            return dt
         except Exception:
             return None
     return serie.apply(_conv)
@@ -1228,10 +1331,14 @@ def gerar_imagem_proximos_dias(df: pd.DataFrame, mapa: dict, hoje, data_ref: str
 # GERAÇÃO DE IMAGEM — CRIADOS HOJE
 # ================================================================
 
-def gerar_imagem_criados_hoje(df: pd.DataFrame, mapa: dict, hoje, data_ref: str, hora_ref: str):
+def gerar_imagem_criados_hoje(df: pd.DataFrame, mapa: dict, hoje, data_ref: str, hora_ref: str,
+                              ja_filtrado: bool = False):
     """
     Gera PNG da tabela de Agendamentos Criados Hoje
     Estrutura: Estabelecimento → Usuário → Contagem de Cliente
+
+    ja_filtrado=True: o DataFrame já vem pré-filtrado pelo EVUP (DATA CRIAÇÃO = hoje),
+    então não aplica o filtro de data em Python (o timestamp no Excel pode diferir).
     """
     col_estab      = mapa.get("estabelecimento")
     col_usuario    = mapa.get("usuario")
@@ -1252,7 +1359,7 @@ def gerar_imagem_criados_hoje(df: pd.DataFrame, mapa: dict, hoje, data_ref: str,
         print(f"[DEBUG-IMG] Valores Localidade: {vals[:10]}")
         df2 = df2[df2[col_localidade].str.upper().str.contains("AVALIA", na=False)]
         print(f"[DEBUG-IMG] Após filtro AVALIA: {len(df2)}")
-    if col_criacao:
+    if col_criacao and not ja_filtrado:
         amostra = df2[col_criacao].dropna().head(3).tolist()
         print(f"[DEBUG-IMG] Amostra data_criacao bruta: {amostra}")
         hoje_dd  = hoje.strftime("%d/%m/%Y")   # "25/03/2026"
@@ -1262,6 +1369,8 @@ def gerar_imagem_criados_hoje(df: pd.DataFrame, mapa: dict, hoje, data_ref: str,
         print(f"[DEBUG-IMG] Buscando: '{hoje_dd}' ou '{hoje_iso}' → {mask.sum()} matches")
         df2 = df2[mask]
         print(f"[IMG-CRIACAO] Criados hoje (AVALIACAO): {len(df2)} linhas")
+    elif ja_filtrado:
+        print(f"[IMG-CRIACAO] ja_filtrado=True — sem filtro data_criacao Python. Linhas: {len(df2)}")
 
     if df2.empty:
         print("[IMG-CRIACAO] Nenhum agendamento de AVALIAÇÃO criado hoje.")
@@ -1409,7 +1518,12 @@ def gerar_imagem_zero_criados(data_ref: str, hora_ref: str):
 # ENVIO WEBHOOK
 # ================================================================
 
+DRY_RUN = os.environ.get("DRY_RUN", "false").lower() == "true"
+
 def enviar_webhook(mensagem: str, tipo: str, data_ref: str, hora_ref: str, imagem_b64: str = None):
+    if DRY_RUN:
+        print(f"  [DRY_RUN] Webhook [{tipo}] NÃO enviado (modo teste).")
+        return
     payload = {
         "tipo": tipo,
         "data": data_ref,
@@ -1445,20 +1559,13 @@ def main():
     print(f"  Headless: {HEADLESS}")
     print(f"{'='*55}\n")
 
-    # Data fim ampla para capturar todos os agendamentos criados hoje
-    # independente de quando estão programados (inclui >14 dias)
-    data_fim_largo  = hoje + timedelta(days=365)
-    fim_str_largo   = data_fim_largo.strftime("%d/%m/%Y")
+    data_fim_largo = hoje + timedelta(days=365)
+    fim_str_largo  = data_fim_largo.strftime("%d/%m/%Y")
 
-    # ── Sessão única: um login, dois downloads, dois relatórios ──
-    # proximos_dias: DATA PROGRAMADA = hoje → hoje+14
-    # criados_hoje:  DATA CRIAÇÃO = hoje + DATA PROGRAMADA = hoje → hoje+365
-    # (mesmo browser — evita falha do 2º processo Chromium no Railway)
     caminho_proximos = None
     caminho_criados  = None
     erro_download    = False
 
-    print("\n[DOWNLOAD] Iniciando sessão única (2 buscas)...")
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=HEADLESS,
@@ -1474,7 +1581,7 @@ def main():
         try:
             login_evup(page)
 
-            # ── Busca 1: Próximos Dias (DATA PROGRAMADA = hoje → hoje+14) ──
+            # ── DOWNLOAD-1: Próximos Dias ─────────────────────────────
             print("\n[DOWNLOAD-1] proximos_dias...")
             frame_agen = navegar_para_agendamentos(page)
             expandir_filtro(frame_agen)
@@ -1484,28 +1591,24 @@ def main():
             expandir_filtro(frame_agen)
             buscar_e_aguardar(frame_agen)
             caminho_proximos = baixar_excel(frame_agen)
-            print(f"[DOWNLOAD-1] Excel proximos_dias: {caminho_proximos}")
+            print(f"[DOWNLOAD-1] Excel: {caminho_proximos}")
 
-            # ── Busca 2: Criados Hoje ────────────────────────────────────
-            # Após o primeiro download, o Kendo Grid fica em estado pós-download
-            # que impede a visibilidade dos inputs mesmo após re-navegação SPA
-            # (o iframe é reutilizado sem reload). page.reload() reseta o DOM
-            # completamente mantendo o cookie de sessão — sem necessidade de re-login.
-            print("\n[DOWNLOAD-2] criados_hoje — recarregando página para estado limpo...")
+            # ── DOWNLOAD-2: Criados Hoje ──────────────────────────────
+            # Filtros: Data Programada=hoje+14d + Data Criação=hoje + Serviço Avulso=AVALIAÇÃO
+            print("\n[DOWNLOAD-2] criados_hoje — reload para estado limpo...")
             page.reload(wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(4000)  # aguarda SPA inicializar após reload
+            page.wait_for_timeout(3000)
             frame_agen2 = navegar_para_agendamentos(page)
             expandir_filtro(frame_agen2)
-            # DATA PROGRAMADA ampla → captura todos criados hoje (inclusive além de 14d)
-            configurar_datas(frame_agen2, inicio_str, fim_str_largo, hoje, data_fim_largo)
+            configurar_datas(frame_agen2, inicio_str, fim_str, hoje, data_fim_excel)
             configurar_nivel_detalhamento(frame_agen2)
             limpar_coluna_anterior(frame_agen2)
-            # DATA CRIAÇÃO = hoje — filtro principal do relatório
             configurar_data_criacao(frame_agen2, inicio_str)
+            configurar_servico_avulso(frame_agen2, "AVALIAÇÃO")
             expandir_filtro(frame_agen2)
             buscar_e_aguardar(frame_agen2)
-            caminho_criados = baixar_excel(frame_agen2)
-            print(f"[DOWNLOAD-2] Excel criados_hoje: {caminho_criados}")
+            caminho_criados = baixar_excel(frame_agen2, skip_empty_check=True)
+            print(f"[DOWNLOAD-2] Excel: {caminho_criados}")
 
         except Exception as e:
             erro_download = True
@@ -1524,7 +1627,7 @@ def main():
         print(f"\n[{datetime.now(TZ_SP).strftime('%H:%M:%S')}] Encerrado com erro no download.\n")
         return
 
-    # ── Próximos Dias ────────────────────────────────────────────
+    # ── PROXIMOS DIAS ─────────────────────────────────────────────
     try:
         df1   = ler_excel(caminho_proximos)
         mapa1 = mapear_colunas(df1)
@@ -1549,17 +1652,13 @@ def main():
     else:
         print("  Sem dados para 'Próximos Dias'.")
 
-    # ── Criados Hoje ─────────────────────────────────────────────
+    # ── CRIADOS HOJE ──────────────────────────────────────────────
+    print("\n--- GERANDO: Criados Hoje ---")
     if not caminho_criados:
-        if erro_download:
-            print("  [criados_hoje] Download falhou — pulando.")
-        else:
-            # Grid vazio: nenhum agendamento criado hoje (cenário válido).
-            # Gera imagem para garantir que o n8n/Z-API envie a mensagem WhatsApp.
-            print("  [criados_hoje] 0 agendamentos criados hoje — gerando imagem.")
-            _, img_b64_zero = gerar_imagem_zero_criados(data_ref, hora_ref)
-            msg_zero = f"📋 Criados Hoje — {data_ref} {hora_ref}\n\nNenhum agendamento de avaliação criado hoje."
-            enviar_webhook(msg_zero, "criados_hoje", data_ref, hora_ref, img_b64_zero)
+        print("  [criados_hoje] Sem download — gerando imagem aviso.")
+        _, img_b64_zero = gerar_imagem_zero_criados(data_ref, hora_ref)
+        msg_zero = f"📋 Criados Hoje — {data_ref} {hora_ref}\n\nNenhum agendamento de avaliação criado hoje."
+        enviar_webhook(msg_zero, "criados_hoje", data_ref, hora_ref, img_b64_zero)
     else:
         try:
             df2   = ler_excel(caminho_criados)
@@ -1569,19 +1668,15 @@ def main():
             df2, mapa2 = None, None
 
         if df2 is not None:
-            col_cri = mapa2.get("data_criacao")
-            if col_cri:
-                datas_c = pd.to_datetime(df2[col_cri], dayfirst=True, errors="coerce")
-                n_hoje  = (datas_c.dt.date == hoje).sum()
-                print(f"[DEBUG] Total linhas criados: {len(df2)} | DATA CRIAÇÃO=hoje: {n_hoje} | máx: {datas_c.max()}")
-
-            print("\n--- GERANDO: Criados Hoje ---")
-            caminho_cri, img_b64_criados = gerar_imagem_criados_hoje(df2, mapa2, hoje, data_ref, hora_ref)
+            caminho_cri, img_b64_criados = gerar_imagem_criados_hoje(df2, mapa2, hoje, data_ref, hora_ref, ja_filtrado=True)
             if img_b64_criados:
                 print(f"  Imagem: {caminho_cri}")
                 enviar_webhook("Agendamentos Criados Hoje", "criados_hoje", data_ref, hora_ref, img_b64_criados)
             else:
-                print("  Sem dados para 'Criados Hoje'.")
+                print("  0 avaliações criadas hoje — gerando imagem aviso.")
+                _, img_b64_zero = gerar_imagem_zero_criados(data_ref, hora_ref)
+                msg_zero = f"📋 Criados Hoje — {data_ref} {hora_ref}\n\nNenhum agendamento de avaliação criado hoje."
+                enviar_webhook(msg_zero, "criados_hoje", data_ref, hora_ref, img_b64_zero)
 
     print(f"\n[{datetime.now(TZ_SP).strftime('%H:%M:%S')}] Concluído.\n")
 
