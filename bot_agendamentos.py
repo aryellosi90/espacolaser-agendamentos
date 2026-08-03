@@ -470,90 +470,67 @@ def configurar_datas(page, inicio_str: str, fim_str: str, data_inicio, data_fim)
 
 def configurar_servico_avulso(page, valor: str = "AVALIAÇÃO"):
     """
-    Seleciona 'AVALIAÇÃO' no dropdown 'Serviço Avulso' do filtro EVUP.
-    O campo usa Select2 — abre clicando no container e seleciona via texto.
+    Seleciona o valor no dropdown 'Serviço Avulso' (s2id_ddlServiceItem).
+    ddlServiceItem é um INPUT Select2-AJAX — não tem <select> com opções pré-carregadas.
+    Fluxo: clica no container → digita busca → aguarda AJAX → clica na opção.
     """
     print(f"\n[SERVICO] Configurando Serviço Avulso = {valor}...")
+    target = get_page(page)
 
-    resultado = page.evaluate(f"""
-        () => {{
-            // Encontra o label 'Serviço Avulso' e sobe até o container Select2
-            const labels = Array.from(document.querySelectorAll('label, span, div, p'));
-            const lbl = labels.find(el =>
-                el.offsetParent !== null &&
-                el.textContent.trim().startsWith('Serviço Avulso')
-            );
-            if (!lbl) return 'label_not_found';
-
-            // Sobe até o form-group ou container e acha o Select2
-            let container = lbl.closest('.form-group, .col-md-3, .col-sm-3, .form-inline, div');
-            for (let i = 0; i < 5 && container; i++) {{
-                const s2 = container.querySelector('.select2-container');
-                if (s2) {{
-                    s2.click();
-                    return 'opened:' + s2.id;
-                }}
-                container = container.parentElement;
-            }}
-            return 'select2_not_found';
-        }}
-    """)
-    print(f"  [SERVICO] Open resultado: {resultado}")
-    get_page(page).wait_for_timeout(600)
-
-    # Digita o valor no input do Select2 aberto
+    # Clica no container Select2 para abrir o dropdown
     try:
-        inp = page.locator(".select2-drop:not([style*='display: none']) input.select2-input").first
+        container = page.locator("#s2id_ddlServiceItem").first
+        container.click(timeout=3000)
+        page.wait_for_timeout(600)
+        print("  [SERVICO] Container s2id_ddlServiceItem clicado.")
+    except Exception as e:
+        print(f"  [SERVICO] Erro ao clicar container: {e}")
+        return False
+
+    # Digita no input de busca do Select2 aberto
+    try:
+        inp = page.locator(".select2-drop:not([style*='display: none']) input.select2-input, "
+                           ".select2-dropdown-open input.select2-input").first
         if inp.is_visible(timeout=2000):
-            inp.type(valor[:4], delay=50)  # digita os primeiros 4 chars
-            get_page(page).wait_for_timeout(500)
-    except Exception:
-        pass
+            inp.type(valor[:5], delay=50)
+            page.wait_for_timeout(900)  # aguarda AJAX retornar resultados
+            print(f"  [SERVICO] Digitado '{valor[:5]}' no input.")
+        else:
+            print("  [SERVICO] Input Select2 não visível, tentando teclado...")
+            target.keyboard.type(valor[:5], delay=50)
+            page.wait_for_timeout(900)
+    except Exception as e:
+        print(f"  [SERVICO] Erro ao digitar: {e}")
 
-    # Clica na opção que aparece no dropdown
+    # Clica na opção que contém o valor
+    for seletor in [
+        f".select2-results li:has-text('{valor}')",
+        f".select2-result-label:has-text('{valor}')",
+        f".select2-results .select2-result:has-text('{valor[:5]}')",
+    ]:
+        try:
+            opcao = page.locator(seletor).first
+            if opcao.is_visible(timeout=2000):
+                opcao.click()
+                page.wait_for_timeout(400)
+                print(f"  [SERVICO] '{valor}' selecionado via '{seletor}'.")
+                return True
+        except Exception:
+            continue
+
+    # Fallback: pressiona Enter na primeira opção visível
     try:
-        opcao = page.locator(
-            f".select2-results li:has-text('{valor}'), "
-            f".select2-result-label:has-text('{valor}')"
-        ).first
-        if opcao.is_visible(timeout=2000):
-            opcao.click()
-            print(f"  [SERVICO] '{valor}' selecionado.")
-            get_page(page).wait_for_timeout(400)
+        primeira = page.locator(".select2-results li.select2-result-selectable").first
+        if primeira.is_visible(timeout=1500):
+            texto = primeira.inner_text()
+            primeira.click()
+            page.wait_for_timeout(400)
+            print(f"  [SERVICO] Fallback: selecionou primeira opção '{texto}'.")
             return True
     except Exception:
         pass
 
-    # Fallback: tenta via JS direto no select oculto
-    resultado2 = page.evaluate(f"""
-        () => {{
-            const labels = Array.from(document.querySelectorAll('label, span, div'));
-            const lbl = labels.find(el =>
-                el.offsetParent !== null &&
-                el.textContent.trim().startsWith('Serviço Avulso')
-            );
-            if (!lbl) return 'no_label';
-            let container = lbl.closest('.form-group, .col-md-3, .col-sm-3, div');
-            for (let i = 0; i < 5 && container; i++) {{
-                const sel = container.querySelector('select');
-                if (sel) {{
-                    const opt = Array.from(sel.options).find(o =>
-                        o.text.toUpperCase().includes('{valor.upper()}')
-                    );
-                    if (opt) {{
-                        sel.value = opt.value;
-                        sel.dispatchEvent(new Event('change', {{bubbles:true}}));
-                        return 'js_select:' + opt.text;
-                    }}
-                    return 'option_not_found:' + Array.from(sel.options).map(o=>o.text).join(',');
-                }}
-                container = container.parentElement;
-            }}
-            return 'select_not_found';
-        }}
-    """)
-    print(f"  [SERVICO] JS fallback: {resultado2}")
-    get_page(page).wait_for_timeout(300)
+    print(f"  [SERVICO] AVISO: não foi possível selecionar '{valor}' no Serviço Avulso.")
     return False
 
 
