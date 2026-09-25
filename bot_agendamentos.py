@@ -1658,7 +1658,7 @@ def main():
             df2, mapa2 = None, None
 
         if df2 is not None:
-            caminho_cri, img_b64_criados = gerar_imagem_criados_hoje(df2, mapa2, hoje, data_ref, hora_ref, ja_filtrado=True)
+            caminho_cri, img_b64_criados = gerar_imagem_criados_hoje(df2, mapa2, hoje, data_ref, hora_ref, ja_filtrado=False)
             if img_b64_criados:
                 print(f"  Imagem: {caminho_cri}")
                 enviar_webhook("Agendamentos Criados Hoje", "criados_hoje", data_ref, hora_ref, img_b64_criados)
