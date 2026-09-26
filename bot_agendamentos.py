@@ -1350,11 +1350,19 @@ def gerar_imagem_criados_hoje(df: pd.DataFrame, mapa: dict, hoje, data_ref: str,
     if col_criacao and not ja_filtrado:
         amostra = df2[col_criacao].dropna().head(3).tolist()
         print(f"[DEBUG-IMG] Amostra data_criacao bruta: {amostra}")
-        hoje_dd  = hoje.strftime("%d/%m/%Y")   # "25/03/2026"
-        hoje_iso = hoje.isoformat()             # "2026-03-25"
+        from datetime import timedelta as _td
+        ontem    = hoje - _td(days=1)
+        hoje_dd  = hoje.strftime("%d/%m/%Y")
+        hoje_iso = hoje.isoformat()
+        ontem_dd = ontem.strftime("%d/%m/%Y")
+        ontem_iso = ontem.isoformat()
         col_str  = df2[col_criacao].astype(str)
-        mask = col_str.str.startswith(hoje_dd) | col_str.str.startswith(hoje_iso)
-        print(f"[DEBUG-IMG] Buscando: '{hoje_dd}' ou '{hoje_iso}' → {mask.sum()} matches")
+        # Inclui batch 23:59 de ontem (criado na madrugada para hoje) + creates manuais de hoje
+        mask = (col_str.str.startswith(hoje_dd)  |
+                col_str.str.startswith(hoje_iso)  |
+                col_str.str.startswith(ontem_iso + " 23:59") |
+                col_str.str.startswith(ontem_dd  + " 23:59"))
+        print(f"[DEBUG-IMG] Buscando: hoje={hoje_iso} ou ontem 23:59={ontem_iso} 23:59 → {mask.sum()} matches")
         df2 = df2[mask]
         print(f"[IMG-CRIACAO] Criados hoje (AVALIACAO): {len(df2)} linhas")
     elif ja_filtrado:
