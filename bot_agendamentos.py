@@ -1590,13 +1590,14 @@ def main():
             print(f"[DOWNLOAD-1] Excel: {caminho_proximos}")
 
             # ── DOWNLOAD-2: Criados Hoje ──────────────────────────────
-            # Filtros: Data Programada=hoje+14d + Data Criação=hoje + Serviço Avulso=AVALIAÇÃO
+            # Filtros: Data Programada=hoje+365d + Data Criação=hoje + Serviço Avulso=AVALIAÇÃO
+            # Usa janela larga (365d) para capturar avaliações criadas hoje p/ qualquer data futura
             print("\n[DOWNLOAD-2] criados_hoje — reload para estado limpo...")
             page.reload(wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(3000)
             frame_agen2 = navegar_para_agendamentos(page)
             expandir_filtro(frame_agen2)
-            configurar_datas(frame_agen2, inicio_str, fim_str, hoje, data_fim_excel)
+            configurar_datas(frame_agen2, inicio_str, fim_str_largo, hoje, data_fim_largo)
             configurar_nivel_detalhamento(frame_agen2)
             limpar_coluna_anterior(frame_agen2)
             configurar_servico_avulso(frame_agen2, "AVALIAÇÃO")
